@@ -91,7 +91,8 @@ void KIp_v6::DBG_Show_Eth_IPv6_Hdr(FILE* fd) const
 ///////////////////////////////////////////////////////////////////////
 // KIcmp_v6
 // KIcmp_v6::DBG_Show
-#define N_SOL GRN_B("N_Sol")
+
+#define OPT WHT_B("   opt : ")
 
 void KIcmp_v6::DBG_ShowSelf(const int payload_len, FILE* fd) const
 {
@@ -112,14 +113,15 @@ void KIcmp_v6::DBG_ShowSelf(const int payload_len, FILE* fd) const
 	case 134:
 		fprintf(fd, "   ICMPv6 -> " MGT_B("R_Adv") "\n\n");
 		return;
-	case 135:
-		// ICMPv6 -> Neighbor Solicitation
-		// type, code, checksum, target addr で 24 bytes
+
+	case 135:  // ICMPv6 -> Neighbor Solicitation
 		this->DBG_Show_N_Sol(payload_len - 24);
 		return;
-	case 136:
-		fprintf(fd, "   ICMPv6 -> " GRN_B("N_Adv") "\n\n");
+
+	case 136:  // ICMPv6 -> Neighbor Advertisement
+		this->DBG_Show_N_Adv(payload_len - 24);
 		return;
+
 	default:
 		fprintf(fd, "   ICMPv6 -> ??\n\n");
 		return;
@@ -135,13 +137,15 @@ void KIcmp_v6::DBG_Show_N_Sol(const int option_len, FILE* fd) const
 
 	// -------------------------------------
 	// Target addr
-	const auto [pcstr_Tgt_addr, _] = g_IF_Infos.Get_Name_by_v6_addr(pTgt_addr_ui64);
-	fprintf(fd, "   ICMPv6 -> " N_SOL " / Target v6 addr -> %s\n", pcstr_Tgt_addr);
+	const auto [pcstr_Tgt_addr, b_known] = g_IF_Infos.Get_Name_by_v6_addr(pTgt_addr_ui64);
+	fprintf(fd, "   ICMPv6 -> " GRN_B("N_Sol") " / Target v6 addr -> %s\n", pcstr_Tgt_addr);
+	if (b_known == false)
+		{ mc_pIP_v6->DBG_Show_Eth_IPv6_Hdr(fd); }
 
 	// -------------------------------------
 	if (option_len == 0)
 	{
-		fprintf(fd, "   option -> none\n\n");
+		fprintf(fd, OPT "none\n\n");
 		return;
 	}
 
@@ -154,7 +158,7 @@ void KIcmp_v6::DBG_Show_N_Sol(const int option_len, FILE* fd) const
 		return;
 
 	default:
-		DBG_F(fd, "   option -> {}\n\n", *p_opt);
+		DBG_F(fd, OPT "{}\n\n", *p_opt);
 		return;
 	}
 }
@@ -168,14 +172,19 @@ void KIcmp_v6::DBG_Show_N_Sol_1_2(const uint8_t* const p_opt, const int opt_len,
 		{ THROW("option_len != 8"); }
 
 	if (*p_opt == 1)
-		{ fprintf(fd, "   " WHT_B("opt : ") "Source L2 addr -> "); }
+		{ fprintf(fd, OPT "Source L2 addr -> "); }
 	else
-		{ fprintf(fd, "   " WHT_B("opt : ") "Target L2 addr -> "); }
+		{ fprintf(fd, OPT "Target L2 addr -> "); }
 
 	const uint64_t mac_addr = *(uint64_t*)(p_opt + 2);
-	const auto [cstr_mac_addr, b_name] = g_IF_Infos.Get_Name_by_mac_addr(mac_addr);
+	const auto [cstr_mac_addr, b_known] = g_IF_Infos.Get_Name_by_mac_addr(mac_addr);
 	fprintf(fd, "%s\n", cstr_mac_addr);
-	if (b_name == true)
+
+	if (b_known == false)
+		{ mc_pIP_v6->DBG_Show_Eth_IPv6_Hdr(fd); }
+	fprintf(fd, "\n");
+
+#if false
 	{
 		fprintf(fd, "   " END_MARK "\n\n");
 		return;
@@ -183,11 +192,47 @@ void KIcmp_v6::DBG_Show_N_Sol_1_2(const uint8_t* const p_opt, const int opt_len,
 
 	// 未知の mac addr を受け取ったときは、追加情報を表示する
 	mc_pIP_v6->DBG_Show_Eth_IPv6_Hdr(fd);
-	fprintf(fd, "   " END_MARK "\n\n");
+	fprintf(fd, "\n\n");
+//	fprintf(fd, "   " END_MARK "\n\n");
+#endif
 }
 
 // --------------------------------------------------------------------
 // KIcmp_v6::DBG_Show_N_Adv
-void KIcmp_v6::DBG_Show_N_Adv(int option_len, FILE* fd) const
+void KIcmp_v6::DBG_Show_N_Adv(int n_adv_opt_len, FILE* fd) const
 {
+	const uint8_t* pIcmp6_hdr_ui8 = this->pIcmp6_hdr_ui8();
+	const void* pTgt_addr_ui64 = (const void*)(pIcmp6_hdr_ui8 + 8);
+
+	// -------------------------------------
+	// Target addr
+	const auto [pcstr_Tgt_addr, _] = g_IF_Infos.Get_Name_by_v6_addr(pTgt_addr_ui64);
+	fprintf(fd, "   ICMPv6 -> " GRN_B("N_Adv") " / ");
+	{
+		const uint8_t flags = *(pIcmp6_hdr_ui8 + 4);
+		fprintf(fd, "\x1b[1;32m");
+		if (flags & 0x80) { fprintf(fd, "Rt-src "); }
+		if (flags & 0x40) { fprintf(fd, "Sol-rep "); }
+		if (flags & 0x20) { fprintf(fd, "Ov "); }
+		if (flags & 0xe0)
+			{ fprintf(fd, "\x1b[0m/ "); }
+		else
+			{ fprintf(fd, "\x1b[0m"); }
+	}
+	fprintf(fd, "Target v6 addr -> %s\n", pcstr_Tgt_addr);
+
+	// -------------------------------------
+	if (n_adv_opt_len == 0)
+	{
+		fprintf(fd, OPT "none\n\n");
+		return;
+	}
+
+	const uint8_t* p_opt = pIcmp6_hdr_ui8 + 24;
+	switch (*p_opt)
+	{
+	default:
+		DBG_F(fd, "   option -> {}\n\n", *p_opt);
+		return;
+	}
 }

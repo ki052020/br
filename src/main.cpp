@@ -1,50 +1,18 @@
 #include	<stdio.h>
-#include	<string.h>
 #include	<unistd.h>
-#include	<poll.h>
-#include	<errno.h>
-#include	<signal.h>
-#include	<stdarg.h>
-#include	<sys/socket.h>
-#include	<arpa/inet.h>
-#include	<netinet/if_ether.h>
-#include	<netinet/ip6.h>
-
-#include <netdb.h>
-#include <ifaddrs.h>
-#include <stdlib.h>
-#include <linux/if_link.h>
-
-#include	"netutil.h"
-
-#include <format>
+#include <sys/epoll.h>
 
 #include "my_basic.h"
 #include "KException.h"
 #include "KSocket.h"
 #include "KIPv6.h"
+#include "KIf.h"
 
 #include "main.h"
 
-
-typedef struct	{
-	const char	*Device1;
-	const char	*Device2;
-	int	DebugOut;
-}PARAM;
-PARAM	Param={"eth0","eth3",0};
-
-typedef struct	{
-	int	soc;
-}DEVICE;
-DEVICE	Device[2];
-
-int	EndFlag=0;
-
 // ---------------------------------------------------------------
-// cnt を減らす場合 true を返す
-// 戻り値 : 将来利用するかも、と思って int にしているだけ
-int AnalyzePacket(const uint8_t* pbuf, int bytes);
+#define MSEC_epoll_timeout 1000
+#define MAX_PCS_epoll_events 10
 
 // ---------------------------------------------------------------
 int main(int argc, const char* argv[])
@@ -62,28 +30,60 @@ int main(int argc, const char* argv[])
 
 	try
 	{
-		// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-		// KSocket の生成
-		ifaddrs* p1st_ifaddrs = NULL;
-		if (getifaddrs(&p1st_ifaddrs) < 0)
-			{ THROW("getifaddrs() < 0"); }
-
-	   // protocol = ETH_P_ALL | ETH_P_IP | ETH_P_IPV6
-		// ETH_P_ALL を指定すると、送信時のパケットもキャプチャできるようになる
-		KSocket w_soc{ "enp2s0", p1st_ifaddrs, ETH_P_IPV6, true };
-		w_soc.Set_NickName(MGT_B("Wan_IF"));
+		// ---------------------
+		// fd_epoll
+		struct AutoCloser_fd_epoll {
+			AutoCloser_fd_epoll() { if (mc_fd_epoll < 0) { THROW("mc_fd_epoll < 0"); } }
+			~AutoCloser_fd_epoll() { close(mc_fd_epoll); }
+			operator int() { return mc_fd_epoll; }
+			
+			const int mc_fd_epoll = epoll_create1(0);
+		} fd_epoll;
 		
-		KSocket l_soc{ "enx7cc2c63c49d0", p1st_ifaddrs, ETH_P_IPV6, true };
-		l_soc.Set_NickName(GRN_B("Lan_IF"));
+		// ---------------------
+		// p_ifaddrs_list
+		struct AutoCloser_ifaddrs {
+			AutoCloser_ifaddrs() {
+				if (getifaddrs(&m_p_ifaddrs) < 0) { THROW("getifaddrs(&m_p_ifaddrs) < 0"); }
+			}
+			~AutoCloser_ifaddrs() { freeifaddrs(m_p_ifaddrs); }
+			operator const ifaddrs*() { return m_p_ifaddrs; }
+		private:
+			ifaddrs* m_p_ifaddrs = NULL;
+		} p_ifaddrs_list;
 
-		freeifaddrs(p1st_ifaddrs);
+		// ---------------------------------
+		// if_Wan の生成
+		KIf_WAN if_Wan = [&p_ifaddrs_list, &fd_epoll]()
+			{
+				KIF_Info if_info{ "enp2s0", p_ifaddrs_list };
+				
+			   // protocol = ETH_P_ALL | ETH_P_IP | ETH_P_IPV6
+				// ETH_P_ALL を指定すると、送信時のパケットもキャプチャできるようになる
+				return KIf_WAN{ if_info, ETH_P_IPV6, true, fd_epoll };
+			}();		
+		if_Wan.Set_NickName(MGT_B("if_Wan"));
+		g_IF_Infos.push_back(&if_Wan);
+		
+		// ---------------------------------
+		// if_Lan の生成
+		//【注意】link up していない interface を KIF オブジェクトにすると、
+		// epoll_wait() で「EPOLLERR」が生成される
+#if false
+		KIf_LAN if_Lan{
+			KIF_Info{ "enx7cc2c63c49d0", p_ifaddrs_list }
+			, ETH_P_IPV6, true, fd_epoll
+		};
+#else
+		KSocket if_Lan{ KIF_Info{"enx7cc2c63c49d0", p_ifaddrs_list}, ETH_P_IPV6, true };
+#endif
 
-		g_IF_Infos.push_back(&w_soc);
-		g_IF_Infos.push_back(&l_soc);
+		if_Lan.Set_NickName(GRN_B("if_Lan"));
+		g_IF_Infos.push_back(&if_Lan);
 
 		// ---------------------------------
 		// ONU 情報を追加
-		KIF_Info ONU_if_info(YLW_B("ONU"));
+		KIF_Info ONU_if_info(YLW_B("HGW"));
 		{
 			ONU_if_info.Set_MacAddr(be64toh(0x5852'8a77'6312'0000));
 			const uint64_t intf_addr = ONU_if_info.Add_v6_addr_by_cstr(argv[1]);
@@ -111,10 +111,6 @@ int main(int argc, const char* argv[])
 
 
 
-
-
-		// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-
 #if MY_DEBUG
 		// ---------------------------------
 		// デバッグ用表示
@@ -123,17 +119,48 @@ int main(int argc, const char* argv[])
 
 
 
-#if true
-		for (int cnt = 5; cnt > 0;)
+		// イベントループ
+		epoll_event ary_events[MAX_PCS_epoll_events];
+//		for (;;)		
+		for (int cnt = 10; cnt > 0;)
 		{
-			bytes_read = w_soc.Read(buf, sizeof(buf));
-//			if (bytes_read < (int)(sizeof(ether_header) + sizeof(ip6_hdr)))
-			if (bytes_read < (int)sizeof(ether_header))
-				{ THROW("bytes_read < sizeof(ether_header)"); }
+			// --------------------------------------
+			// epoll_wait() 外でシグナルが発せられたときのことを考慮して、timeout を設定している
+			const int retval_epoll_wait
+				= epoll_wait(
+					fd_epoll, ary_events, MAX_PCS_epoll_events
+					, MSEC_epoll_timeout	// timeout（ミリ秒）
+				);
+/*
+			if (IsShuttingDown() == true)
+			{
+				break;  // exit epoll event loop
+			}
+*/
+			if (retval_epoll_wait == 0) { continue; }  // timeout 時の処理
+		
+			if (retval_epoll_wait < 0)
+			{
+				if (errno == EINTR)
+				{
+					printf("+++ errno == EINTR を検知しました。\n\n");
+					break;  // exit epoll event loop
+				}
 
-			if (AnalyzePacket(buf, bytes_read) == 0) { --cnt; }
+				THROW("retval_epoll_wait < 0");
+			}
+		
+			// --------------------------------------
+			const epoll_event* pary_events = ary_events;
+			for (int i = retval_epoll_wait; i > 0; pary_events++, i--)
+			{
+				KIf_EPOLLIN* const p_if_EPOLLIN = (KIf_EPOLLIN*)pary_events->data.ptr;
+				if (p_if_EPOLLIN->PreProc_EPOLLIN(pary_events->events) == 0)
+					{ cnt--; }
+				else
+					{ THROW("PreProc_EPOLLIN() が不明な値を返しました。"); }
+			}
 		}
-#endif
 	}
 	catch (const KException& ex)
 	{
@@ -145,7 +172,7 @@ int main(int argc, const char* argv[])
 }
 
 // ---------------------------------------------------------------
-int AnalyzePacket(const uint8_t* pbuf, int bytes)
+int G_AnalyzePacket(const uint8_t* pbuf, int bytes)
 {
 	if (const ether_header* peh = (const ether_header*)pbuf;
 		peh->ether_type != CEV_ntohs(ETH_P_IPV6))
@@ -165,116 +192,6 @@ int AnalyzePacket(const uint8_t* pbuf, int bytes)
 	return 0;
 }
 
-// ---------------------------------------------------------------
-int DebugPrintf(const char *fmt,...)
-{
-	if(Param.DebugOut){
-		va_list	args;
-
-		va_start(args,fmt);
-		vfprintf(stderr,fmt,args);
-		va_end(args);
-	}
-
-	return(0);
-}
-
-// ---------------------------------------------------------------
-int DebugPerror(const char *msg)
-{
-	if(Param.DebugOut){
-		fprintf(stderr,"%s : %s\n",msg,strerror(errno));
-	}
-
-	return(0);
-}
-
-int AnalyzePacket(int deviceNo,u_char *data,int size)
-{
-u_char	*ptr;
-int	lest;
-struct ether_header	*eh;
-
-	ptr=data;
-	lest=size;
-
-	if(lest < (int)sizeof(ether_header)){
-		DebugPrintf("[%d]:lest(%d)<sizeof(struct ether_header)\n",deviceNo,lest);
-		return(-1);
-	}
-	eh=(struct ether_header *)ptr;
-	ptr+=sizeof(struct ether_header);
-	lest-=sizeof(struct ether_header);
-	DebugPrintf("[%d]",deviceNo);
-	if(Param.DebugOut){
-		PrintEtherHeader(eh,stderr);
-	}
-
-	return(0);
-}
-
-int Bridge()
-{
-struct pollfd	targets[2];
-int	nready,i,size;
-u_char	buf[2048];
-
-	targets[0].fd=Device[0].soc;
-	targets[0].events=POLLIN|POLLERR;
-	targets[1].fd=Device[1].soc;
-	targets[1].events=POLLIN|POLLERR;
-
-	while(EndFlag==0){
-		switch(nready=poll(targets,2,100)){
-			case	-1:
-				if(errno!=EINTR){
-					perror("poll");
-				}
-				break;
-			case	0:
-				break;
-			default:
-				for(i=0;i<2;i++){
-					if(targets[i].revents&(POLLIN|POLLERR)){
-						if((size=read(Device[i].soc,buf,sizeof(buf)))<=0){
-							perror("read");
-						}
-						else{
-							if(AnalyzePacket(i,buf,size)!=-1){
-								if((size=write(Device[(!i)].soc,buf,size))<=0){
-									perror("write");
-								}
-							}
-						}
-					}
-				}
-				break;
-		}
-	}
-
-	return(0);
-}
-
-#if false
-int DisableIpForward()
-{
-FILE    *fp;
-
-	if((fp=fopen("/proc/sys/net/ipv4/ip_forward","w"))==NULL){
-		DebugPrintf("cannot write /proc/sys/net/ipv4/ip_forward\n");
-		return(-1);
-	}
-	fputs("0",fp);
-	fclose(fp);
-
-	return(0);
-}
-#endif
-
-void EndSignal(int sig)
-{
-	EndFlag=1;
-}
 
 //////////////////////////////////////////////////////////////////
 // GIF_Infos

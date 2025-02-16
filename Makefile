@@ -1,6 +1,10 @@
 MY_PROG := br
 
+BOOST_PATH := _boost
+#BOOST_PATH := /workspaces/dev/boost/boost_1_87_0
+
 CMN_PATH := _cmn
+#CMN_PATH := /workspaces/dev/router/_cmn
 CMN_SRCS := KException KSocket my_basic
 CMN_OBJS := $(CMN_SRCS:%=obj_cmn/%.o)
 CMN_DEPS := $(CMN_SRCS:%=obj_cmn/%.d)
@@ -10,12 +14,12 @@ MY_OBJS := $(MY_SRCS:src/%.cpp=obj/%.o)
 MY_DEPS := $(MY_SRCS:src/%.cpp=obj/%.d)
 
 MY_INC_PATH := \
-  -I /home/docker_shared/boost/boost_1_87_0\
+  -I $(BOOST_PATH)\
   -I $(CMN_PATH)
 
 # -g : デバッグ用ビルドを実行
-# -rdynamic : 共有ファイルからデバッグ用シンボル名を出力
-# -ldl, -lbacktrace : stacktrace 取得のため（OBJ ファイルの後に書くこと）
+# -rdynamic : 共有ファイルから、デバッグ用シンボル名を出力
+# -ldl, -lbacktrace : stacktrace 取得のため。OBJ ファイルの後に書くこと
 MY_OPTS := -std=c++20 -g -Wall -Wno-format-security
 MY_LINK_OPTS := -rdynamic -ldl -lbacktrace
 #MY_LINK_OPTS := -rdynamic -ldl -lbacktrace -lpthread

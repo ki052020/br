@@ -34,3 +34,10 @@ private:
 
 inline GIF_Infos g_IF_Infos;
 
+
+// --------------------------------------------------------------------
+// 一時的な処置
+
+// cnt を減らす場合 true を返す
+// 戻り値 : 将来利用するかも、と思って int にしているだけ
+int G_AnalyzePacket(const uint8_t* pbuf, int bytes);
