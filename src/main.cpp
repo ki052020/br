@@ -2,6 +2,8 @@
 #include	<unistd.h>
 #include <sys/epoll.h>
 
+#include <format>
+
 #include "my_basic.h"
 #include "KException.h"
 #include "KSocket.h"
@@ -25,9 +27,6 @@ int main(int argc, const char* argv[])
 	}
 
 	// ---------------------------------
-	uint8_t buf[65535];
-	int bytes_read = 0;
-
 	try
 	{
 		// ---------------------
@@ -54,14 +53,12 @@ int main(int argc, const char* argv[])
 
 		// ---------------------------------
 		// if_Wan の生成
-		KIf_WAN if_Wan = [&p_ifaddrs_list, &fd_epoll]()
-			{
-				KIF_Info if_info{ "enp2s0", p_ifaddrs_list };
-				
-			   // protocol = ETH_P_ALL | ETH_P_IP | ETH_P_IPV6
-				// ETH_P_ALL を指定すると、送信時のパケットもキャプチャできるようになる
-				return KIf_WAN{ if_info, ETH_P_IPV6, true, fd_epoll };
-			}();		
+	   // protocol = ETH_P_ALL | ETH_P_IP | ETH_P_IPV6
+		// ETH_P_ALL を指定すると、送信時のパケットもキャプチャできるようになる
+		KIf_WAN if_Wan = KIf_WAN{
+			KIF_Info{ "enp2s0", p_ifaddrs_list }
+			, ETH_P_IPV6, true, fd_epoll
+		};
 		if_Wan.Set_NickName(MGT_B("if_Wan"));
 		g_IF_Infos.push_back(&if_Wan);
 		
@@ -69,7 +66,7 @@ int main(int argc, const char* argv[])
 		// if_Lan の生成
 		//【注意】link up していない interface を KIF オブジェクトにすると、
 		// epoll_wait() で「EPOLLERR」が生成される
-#if false
+#if true
 		KIf_LAN if_Lan{
 			KIF_Info{ "enx7cc2c63c49d0", p_ifaddrs_list }
 			, ETH_P_IPV6, true, fd_epoll
@@ -95,18 +92,19 @@ int main(int argc, const char* argv[])
 
 			g_IF_Infos.push_back(&ONU_if_info);
 		}
+		
 		// ---------------------------------
-		// 宅内ルーター情報を追加
-		KIF_Info Rt_0_if_info(YLW_B("Router_0"));
+		// Host in Back 情報を追加
+		KIF_Info host_back_if_info(CYN_B("Host_in_Back"));
 		{
-			Rt_0_if_info.Set_MacAddr(be64toh(0x94c6'910c'2133'0000));
+			host_back_if_info.Set_MacAddr(be64toh(0x94c6'91a9'0be2'0000));
 
 			uint64_t rt_0_v6_addr[2];
 			rt_0_v6_addr[0] = be64toh(0xfe80'0000'0000'0000);
-			rt_0_v6_addr[1] = be64toh(0x96c6'91ff'fe0c'2133);
-			Rt_0_if_info.Add_v6_addr_by_bin2(rt_0_v6_addr);
+			rt_0_v6_addr[1] = be64toh(0x96c6'91ff'fea9'0be2);
+			host_back_if_info.Add_v6_addr_by_bin2(rt_0_v6_addr);
 
-			g_IF_Infos.push_back(&Rt_0_if_info);
+			g_IF_Infos.push_back(&host_back_if_info);
 		}
 
 
@@ -121,8 +119,8 @@ int main(int argc, const char* argv[])
 
 		// イベントループ
 		epoll_event ary_events[MAX_PCS_epoll_events];
-//		for (;;)		
-		for (int cnt = 10; cnt > 0;)
+		for (;;)		
+//		for (int cnt = 10; cnt > 0;)
 		{
 			// --------------------------------------
 			// epoll_wait() 外でシグナルが発せられたときのことを考慮して、timeout を設定している
@@ -155,8 +153,9 @@ int main(int argc, const char* argv[])
 			for (int i = retval_epoll_wait; i > 0; pary_events++, i--)
 			{
 				KIf_EPOLLIN* const p_if_EPOLLIN = (KIf_EPOLLIN*)pary_events->data.ptr;
-				if (p_if_EPOLLIN->PreProc_EPOLLIN(pary_events->events) == 0)
-					{ cnt--; }
+				if (p_if_EPOLLIN->On_EPOLLIN(pary_events->events) == 0)
+					{}
+//					{ cnt--; }
 				else
 					{ THROW("PreProc_EPOLLIN() が不明な値を返しました。"); }
 			}
@@ -165,24 +164,23 @@ int main(int argc, const char* argv[])
 	catch (const KException& ex)
 	{
 		ex.DBG_Show();
-		DBG_dump(buf, bytes_read);
+//		DBG_dump(buf, bytes_read);
 	}
 
 	return 0;
 }
 
 // ---------------------------------------------------------------
-int G_AnalyzePacket(const uint8_t* pbuf, int bytes)
+int G_AnalyzePacket(const uint8_t* const pbuf, int bytes)
 {
 	if (const ether_header* peh = (const ether_header*)pbuf;
 		peh->ether_type != CEV_ntohs(ETH_P_IPV6))
 	{
+		std::string str = std::format("??? catch unknown ether_type -> {:#04x}\n\n"
+			, ntohs(peh->ether_type));
+		printf(str.c_str());
+		
 		return -1;
-#if false
-		// VLAN タグ付きの場合も、現在はエラーとしている
-		THROW(std::format("catch unknown ether_type -> {:#04x}"
-			, ntohs(peh->ether_type)));
-#endif
 	}
 
 	// 現時点では、vlan タグがないものとして想定している

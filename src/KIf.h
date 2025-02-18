@@ -13,12 +13,15 @@ public:
 	virtual ~KIf_EPOLLIN() noexcept;
 	
 	// 戻り値 -> 将来何かに利用することを想定しているだけ
-	int PreProc_EPOLLIN(uint32_t events);
+	int On_EPOLLIN(uint32_t events);
+	
+	// デバッグ用
+	virtual void Show_Signature() const = 0;
 	
 protected:
 	uint8_t* const m_pReadBuf;
 	// 戻り値 -> 将来何かに利用することを想定しているだけ
-	virtual int On_EPOLLIN(int bytes_read) = 0;
+	virtual int Do_On_EPOLLIN(int bytes_read) = 0;
 };
 
 
@@ -31,11 +34,8 @@ public:
 		: KIf_EPOLLIN(if_info, protocol, bPromisc, fd_epoll) {}
 
 	virtual ~KIf_WAN() noexcept {}
-	virtual int On_EPOLLIN(int bytes_read) override
-	{
-		printf("&&& called -> KIf_WAN::On_EPOLLIN()\n\n");
-		return 0;
-	}
+	virtual void Show_Signature() const override;
+	virtual int Do_On_EPOLLIN(int bytes_read) override;
 };
 
 // ---------------------------------------------------------------
@@ -47,9 +47,6 @@ public:
 		: KIf_EPOLLIN(if_info, protocol, bPromisc, fd_epoll) {}
 
 	virtual ~KIf_LAN() noexcept {}
-	virtual int On_EPOLLIN(int bytes_read) override
-	{
-		printf("&&& called -> KIf_LAN::On_EPOLLIN()\n\n");
-		return 0;
-	}
+	virtual void Show_Signature() const override;
+	virtual int Do_On_EPOLLIN(int bytes_read) override;
 };

@@ -7,11 +7,147 @@
 #define DBG_F( fd, fmt, ... )  fprintf(fd, (std::format(fmt, __VA_ARGS__)).c_str());
 
 #include "main.h"
-#include "KSocket.h"
+#include "KIf.h"
 
 #define END_MARK "\x1b[1mEND\x1b[0m"
 
-///////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+// KHdr_v6
+//【要注意】 現在のコンストラクタは「VLAN の存在を想定していない」
+KHdr_v6::KHdr_v6(const void* const pEth_hdr, const int bytes_packet_entire, const KIf_EPOLLIN* pIF)
+	: mc_pEth_hdr{ (ether_header*)pEth_hdr }
+	, mc_bytes_packet_entire{ bytes_packet_entire }
+	, m_pV6_hdr{ (ip6_hdr*)((uint8_t*)pEth_hdr + 14) }  // 現時点では、VLAN に対応していない
+	, mc_pIF{ pIF }
+{
+	// 14 -> イーサフレームヘッダ bytes / 40 -> v6 ヘッダ bytes
+	if (bytes_packet_entire < 14 + 40)
+		{ THROW("bytes_packet_entire < 14 + 40"); }
+		
+	// ---------------------------------------
+	// 念のため、イーサフレームの ether_type をチェックしておく
+	if (mc_pEth_hdr->ether_type != CEV_ntohs(ETH_P_IPV6))
+	{
+		std::string str;
+		str.reserve(100);
+		str = "unknown ether_type -> ";
+		str = str + std::to_string(mc_pEth_hdr->ether_type);
+		THROW(str);
+	}
+
+#if false
+	// ---------------------------------------
+	// 念のため、Payload Length の値をチェックしておく
+	if (const int payload_length = mc_pV6_hdr->ip6_plen
+			; payload_length != bytes_packet_entire - (16 + 40))
+	{
+		this->Dump();
+		
+		std::string str;
+		str.reserve(150);
+		str = "IPv6 ヘッダの Payload Length の値に不整合を検知しました。\n";
+		str = str + "   Payload Length -> " + std::to_string(payload_length)
+				+ "\n   bytes_packet_entire -> " + std::to_string(bytes_packet_entire);
+		THROW(str);
+	}
+#endif
+	
+	m_bytes_rem_next = bytes_packet_entire - 54;
+}
+
+// -------------------------------------------------------------------------
+void KHdr_v6::Dump(FILE* const pf) const
+{
+	fprintf(pf, "+++ IPv6 ヘッダ dump\n   Version -> %d\n", (m_pV6_hdr->ip6_vfc >> 4));
+	fprintf(pf, "   Payload Length -> %d\n", m_pV6_hdr->ip6_plen);
+	fprintf(pf, "   Next Header -> %d\n", m_pV6_hdr->ip6_nxt);
+	fprintf(pf, "   Hop Limit -> %d\n", m_pV6_hdr->ip6_hops);
+	{
+		const auto [pcstr, _1] = g_IF_Infos.Get_Name_by_v6_addr(this->Get_SRC_v6_addr());
+		fprintf(pf, "   Src v6 addr -> %s\n", pcstr);
+	}
+	{
+		const auto [pcstr, _1] = g_IF_Infos.Get_Name_by_v6_addr(this->Get_DST_v6_addr());
+		fprintf(pf, "   Dst v6 addr -> %s\n", pcstr);
+	}
+}
+
+// -------------------------------------------------------------------------
+void KHdr_v6::Show_IF_signature()
+{
+	if (mb_showed_IF_signature == true) { return; }
+	
+	mc_pIF->Show_Signature();
+	mb_showed_IF_signature = true;
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+// KHop_v6
+KHop_v6::KHop_v6(const KHdr_Next& blk_next)
+	: KHdr_Cur{ blk_next }
+	, mc_bytes_this_blk{ *(mc_pCur + 1) * 8 + 8 }
+{
+	if (mc_bytes_rem_cur < mc_bytes_this_blk)
+		{ THROW("mc_bytes_cur < mc_bytes_this_blk"); }
+}
+
+// -------------------------------------------------------------------------
+void KHop_v6::Dump(FILE* const pf) const
+{
+	mc_pHdr_v6->Show_IF_signature();
+	
+	fprintf(pf, "+++ Hop by Hop\n");
+	fprintf(pf, "   Next Header -> %d\n", this->Get_NextHeader());
+	fprintf(pf, "   Hdr Ext Length -> %d\n", this->Get_Hdr_Ext_Length());
+	
+	KHop_v6::Dump_TLV(mc_pCur + 2);
+	fprintf(pf, "\n");
+}
+
+// -------------------------------------------------------------------------
+void KHop_v6::Dump_TLV(const uint8_t* p_option, FILE* pf)
+{
+	const uint8_t option_type = *p_option;
+	fprintf(pf, "   act -> %02b\n", (option_type >> 6));
+	fprintf(pf, "   chg -> %01b\n", ((option_type >> 5) & 1));
+	fprintf(pf, "   type raw value -> 0x%02x\n", option_type);
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+// KIcmp_v6
+KIcmp_v6::KIcmp_v6(const KHdr_Next& blk_next)
+	: KHdr_Cur{ blk_next }
+{
+	switch (const int type = *mc_pCur; type)
+	{
+	case 143:  // Version 2 Multicast Listener Report RFC3810
+		printf("+++ ICMPv6 : Version 2 Multicast Listener Report -> skip\n");
+		this->Dump();
+		m_bytes_this_blk = mc_bytes_rem_cur;
+		break;
+		
+	default:
+		mc_pHdr_v6->Show_IF_signature();
+		printf("+++ ICMPv6 : 不明な type -> %d\n", type);
+		printf("   bytes_rem_cur -> %d\n\n", mc_bytes_rem_cur);
+		m_bytes_this_blk = mc_bytes_rem_cur;
+		break;
+	}
+}
+
+// -------------------------------------------------------------------------
+void KIcmp_v6::Dump(FILE* pf) const
+{
+	mc_pHdr_v6->Show_IF_signature();
+	
+	fprintf(pf, "   type -> %d\n", *(mc_pCur));
+	fprintf(pf, "   bytes_rem_cur -> %d\n\n", mc_bytes_rem_cur);
+}
+
+
+////////////////////////////////////////////////////////////////////////////
 // KIp_v6
 bool KIp_v6::Is_Src_null() const
 {
@@ -50,19 +186,22 @@ const char* KIp_v6::Get_Dst_Name() const
 void KIp_v6::DBG_ShowSelf(FILE* fd) const
 {
 	const int payload_len = Cx_ntohs(mc_pIp6_hdr->ip6_plen);
-	DBG_F(fd, "--- v6 payload -> {} B\n", payload_len);
+#if true
+	DBG_F(fd, "   v6 payload -> {} B / ip6_nxt -> {}\n", payload_len, mc_pIp6_hdr->ip6_nxt);
+#endif
 
 	switch(mc_pIp6_hdr->ip6_nxt)
 	{
-	case IPPROTO_ICMPV6:
-		KIcmp_v6{ this, ((uint8_t*)mc_pIp6_hdr) + 40 }.DBG_ShowSelf(payload_len, fd);
+//	case IPPROTO_HOPOPTS:  // 0
+	case IPPROTO_ICMPV6:  // 58
+		KIcmp_v6_{ this, ((uint8_t*)mc_pIp6_hdr) + 40 }.DBG_ShowSelf(payload_len, fd);
 		return;
 
-	case IPPROTO_TCP:
+	case IPPROTO_TCP:  // 6
 		fprintf(fd, "   TCP\n\n");
 		return;
 
-	case IPPROTO_UDP:
+	case IPPROTO_UDP:  // 17
 		fprintf(fd, "   UDP\n\n");
 		return;
 	}
@@ -89,13 +228,17 @@ void KIp_v6::DBG_Show_Eth_IPv6_Hdr(FILE* fd) const
 
 
 ///////////////////////////////////////////////////////////////////////
-// KIcmp_v6
-// KIcmp_v6::DBG_Show
+// KIcmp_v6_
+// KIcmp_v6_::DBG_Show
 
 #define OPT WHT_B("   opt : ")
 
-void KIcmp_v6::DBG_ShowSelf(const int payload_len, FILE* fd) const
+void KIcmp_v6_::DBG_ShowSelf(const int payload_len, FILE* fd) const
 {
+#if false
+	DBG_F(fd, "   icmp6_type -> {}\n", mc_pIcmp6_hdr->icmp6_type);
+#endif
+
 	switch (mc_pIcmp6_hdr->icmp6_type)
 	{
 	case 1:
@@ -129,8 +272,8 @@ void KIcmp_v6::DBG_ShowSelf(const int payload_len, FILE* fd) const
 }
 
 // --------------------------------------------------------------------
-// KIcmp_v6::DBG_Show_N_Sol
-void KIcmp_v6::DBG_Show_N_Sol(const int option_len, FILE* fd) const
+// KIcmp_v6_::DBG_Show_N_Sol
+void KIcmp_v6_::DBG_Show_N_Sol(const int option_len, FILE* fd) const
 {
 	const uint8_t* pIcmp6_hdr_ui8 = this->pIcmp6_hdr_ui8();
 	const void* pTgt_addr_ui64 = (const void*)(pIcmp6_hdr_ui8 + 8);
@@ -164,9 +307,9 @@ void KIcmp_v6::DBG_Show_N_Sol(const int option_len, FILE* fd) const
 }
 
 // --------------------------------------------------------------------
-// KIcmp_v6::DBG_Show_N_Sol_1_2
+// KIcmp_v6_::DBG_Show_N_Sol_1_2
 // 1 -> Source L2 Address / 2 -> Target L2 Address
-void KIcmp_v6::DBG_Show_N_Sol_1_2(const uint8_t* const p_opt, const int opt_len, FILE* fd) const
+void KIcmp_v6_::DBG_Show_N_Sol_1_2(const uint8_t* const p_opt, const int opt_len, FILE* fd) const
 {
 	if (opt_len != 8)
 		{ THROW("option_len != 8"); }
@@ -198,8 +341,8 @@ void KIcmp_v6::DBG_Show_N_Sol_1_2(const uint8_t* const p_opt, const int opt_len,
 }
 
 // --------------------------------------------------------------------
-// KIcmp_v6::DBG_Show_N_Adv
-void KIcmp_v6::DBG_Show_N_Adv(int n_adv_opt_len, FILE* fd) const
+// KIcmp_v6_::DBG_Show_N_Adv
+void KIcmp_v6_::DBG_Show_N_Adv(int n_adv_opt_len, FILE* fd) const
 {
 	const uint8_t* pIcmp6_hdr_ui8 = this->pIcmp6_hdr_ui8();
 	const void* pTgt_addr_ui64 = (const void*)(pIcmp6_hdr_ui8 + 8);
