@@ -13,9 +13,9 @@ MY_SRCS := $(wildcard src/*.cpp)
 MY_OBJS := $(MY_SRCS:src/%.cpp=obj/%.o)
 MY_DEPS := $(MY_SRCS:src/%.cpp=obj/%.d)
 
-MY_INC_PATH := \
-  -I $(BOOST_PATH)\
-  -I $(CMN_PATH)
+#MY_INC_PATH := \
+#  -I $(BOOST_PATH)\
+#  -I $(CMN_PATH)
 
 # -g : デバッグ用ビルドを実行
 # -rdynamic : 共有ファイルから、デバッグ用シンボル名を出力
@@ -32,11 +32,11 @@ build: $(MY_OBJS) $(CMN_OBJS)
 
 # -H : プリコンパイル済みヘッダを利用するオプション
 obj/%.o: src/%.cpp
-	g++-13 -MMD $(MY_OPTS) $(MY_INC_PATH) -c $< -o $@
+	g++-13 -MMD $(MY_OPTS) -I $(CMN_PATH) -c $< -o $@
 #	g++-13 -MMD $(MY_OPTS) $(MY_INC_PATH) -H -c $< -o $@
 
 obj_cmn/%.o: $(CMN_PATH)/%.cpp
-	g++-13 -MMD $(MY_OPTS) $(MY_INC_PATH) -c $< -o $@
+	g++-13 -MMD $(MY_OPTS) -I $(CMN_PATH) -I $(BOOST_PATH) -c $< -o $@
 #	g++-13 -MMD $(MY_OPTS) $(MY_INC_PATH) -H -c $< -o $@
 
 

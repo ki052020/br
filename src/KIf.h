@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "KSocket.h"
+#include "KIPv6.h"
 
 // ---------------------------------------------------------------
 // KIF
@@ -16,12 +17,15 @@ public:
 	int On_EPOLLIN(uint32_t events);
 	
 	// デバッグ用
-	virtual void Show_Signature() const = 0;
+	virtual void Wrt_Signature(FILE* pf = stdout) const = 0;
 	
 protected:
 	uint8_t* const m_pReadBuf;
 	// 戻り値 -> 将来何かに利用することを想定しているだけ
 	virtual int Do_On_EPOLLIN(int bytes_read) = 0;
+	
+	// デバッグ用： dst mac addr が自分宛でない場合、mac addr 情報を表示する
+	void Chk_DST_mac_addr(KHdr_v6* pHdr_v6);
 };
 
 
@@ -34,7 +38,7 @@ public:
 		: KIf_EPOLLIN(if_info, protocol, bPromisc, fd_epoll) {}
 
 	virtual ~KIf_WAN() noexcept {}
-	virtual void Show_Signature() const override;
+	virtual void Wrt_Signature(FILE* pf = stdout) const override;
 	virtual int Do_On_EPOLLIN(int bytes_read) override;
 };
 
@@ -47,6 +51,10 @@ public:
 		: KIf_EPOLLIN(if_info, protocol, bPromisc, fd_epoll) {}
 
 	virtual ~KIf_LAN() noexcept {}
-	virtual void Show_Signature() const override;
+	virtual void Wrt_Signature(FILE* pf = stdout) const override;
 	virtual int Do_On_EPOLLIN(int bytes_read) override;
+	
+	// ----------------------------------------
+private:
+	void Proc_Icmp_v6(const KHdr_Next& src);
 };

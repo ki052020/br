@@ -35,6 +35,8 @@ KHdr_v6::KHdr_v6(const void* const pEth_hdr, const int bytes_packet_entire, cons
 		THROW(str);
 	}
 
+	// Hop by Hop のとき、Payload Length の値が 9126 となる場合があるため
+	// Length 値のチェックはしないことにした。
 #if false
 	// ---------------------------------------
 	// 念のため、Payload Length の値をチェックしておく
@@ -73,12 +75,12 @@ void KHdr_v6::Dump(FILE* const pf) const
 }
 
 // -------------------------------------------------------------------------
-void KHdr_v6::Show_IF_signature()
+void KHdr_v6::Wrt_IF_signature(FILE* const pf)
 {
-	if (mb_showed_IF_signature == true) { return; }
+	if (mb_wrtn_IF_signature == true) { return; }
 	
-	mc_pIF->Show_Signature();
-	mb_showed_IF_signature = true;
+	mc_pIF->Wrt_Signature(pf);
+	mb_wrtn_IF_signature = true;
 }
 
 
@@ -93,22 +95,57 @@ KHop_v6::KHop_v6(const KHdr_Next& blk_next)
 }
 
 // -------------------------------------------------------------------------
-void KHop_v6::Dump(FILE* const pf) const
+// ptr -> 拡張ヘッダの option の先頭部分（値５が格納されているアドレス）
+static void S_Dump_Router_Alert(const uint8_t* const ptr, FILE* pf = stdout)
 {
-	mc_pHdr_v6->Show_IF_signature();
-	
-	fprintf(pf, "+++ Hop by Hop\n");
-	fprintf(pf, "   Next Header -> %d\n", this->Get_NextHeader());
-	fprintf(pf, "   Hdr Ext Length -> %d\n", this->Get_Hdr_Ext_Length());
-	
-	KHop_v6::Dump_TLV(mc_pCur + 2);
-	fprintf(pf, "\n");
+	if (*(ptr + 1) != 2)
+		{ THROW("Hop by Hop -> Router Alert -> length != 2"); }
+		
+	switch (const int value = *(ptr + 2) * 256 + *(ptr + 3); value)
+	{
+	case 0:
+		fprintf(pf, "   Router Alert -> MLD message\n\n");
+		return;
+		
+	case 1:
+		fprintf(pf, "   Router Alert -> RSVP message\n\n");
+		return;
+		
+	case 2:
+		fprintf(pf, "   Router Alert -> Active Networks message\n\n");
+		return;
+		
+	default:
+		fprintf(pf, "   Router Alert -> 不明な value -> %d\n\n", value);
+	}
 }
 
 // -------------------------------------------------------------------------
-void KHop_v6::Dump_TLV(const uint8_t* p_option, FILE* pf)
+void KHop_v6::Dump(FILE* const pf) const
 {
-	const uint8_t option_type = *p_option;
+	mc_pHdr_v6->Wrt_IF_signature(pf);
+	fprintf(pf, "++ Hop by Hop\n");
+	
+	const uint8_t option_type = *(mc_pCur + 2);
+	switch (option_type)
+	{
+	case 5:  // Router Alert Option
+		if (mc_bytes_this_blk != 8)
+			{ THROW("Hop by Hop -> Router Alert において、データサイズに不整合を検出しました。"); }
+		S_Dump_Router_Alert(mc_pCur + 2);
+		return;
+	
+	default:
+		fprintf(pf, "   Hdr Ext Length -> %d\n", *(mc_pCur + 1));
+		KHop_v6::Dump_TLV(option_type);
+		fprintf(pf, "\n");
+		break;
+	}
+}
+
+// -------------------------------------------------------------------------
+void KHop_v6::Dump_TLV(const uint8_t option_type, FILE* pf)
+{
 	fprintf(pf, "   act -> %02b\n", (option_type >> 6));
 	fprintf(pf, "   chg -> %01b\n", ((option_type >> 5) & 1));
 	fprintf(pf, "   type raw value -> 0x%02x\n", option_type);
@@ -117,22 +154,22 @@ void KHop_v6::Dump_TLV(const uint8_t* p_option, FILE* pf)
 
 ////////////////////////////////////////////////////////////////////////////
 // KIcmp_v6
-KIcmp_v6::KIcmp_v6(const KHdr_Next& blk_next)
-	: KHdr_Cur{ blk_next }
+// デバッグ用
+KIcmp_v6::KIcmp_v6(const KHdr_Next& hdr_next)
+	: KHdr_Cur{ hdr_next }
 {
 	switch (const int type = *mc_pCur; type)
 	{
 	case 143:  // Version 2 Multicast Listener Report RFC3810
-		printf("+++ ICMPv6 : Version 2 Multicast Listener Report -> skip\n");
-		this->Dump();
-		m_bytes_this_blk = mc_bytes_rem_cur;
-		break;
+		// https://datatracker.ietf.org/doc/html/rfc3810
+		this->Dump_v2_Multicast_Listener_Report();
+		printf("\n");
+		return;
 		
 	default:
-		mc_pHdr_v6->Show_IF_signature();
-		printf("+++ ICMPv6 : 不明な type -> %d\n", type);
-		printf("   bytes_rem_cur -> %d\n\n", mc_bytes_rem_cur);
-		m_bytes_this_blk = mc_bytes_rem_cur;
+		mc_pHdr_v6->Wrt_IF_signature();
+		printf("++ ICMPv6 : 不明な type -> %d\n", type);
+		printf("   ICMPv6 bytes -> %d\n\n", mc_bytes_rem_cur);
 		break;
 	}
 }
@@ -140,10 +177,46 @@ KIcmp_v6::KIcmp_v6(const KHdr_Next& blk_next)
 // -------------------------------------------------------------------------
 void KIcmp_v6::Dump(FILE* pf) const
 {
-	mc_pHdr_v6->Show_IF_signature();
+	mc_pHdr_v6->Wrt_IF_signature();
 	
-	fprintf(pf, "   type -> %d\n", *(mc_pCur));
+//	fprintf(pf, "   type -> %d\n", *(mc_pCur));
 	fprintf(pf, "   bytes_rem_cur -> %d\n\n", mc_bytes_rem_cur);
+}
+
+// -------------------------------------------------------------------------
+static const uint8_t* S_Dump_Mcast_Address_Record(const uint8_t* ptr, FILE* pf = stdout)
+{
+	fprintf(pf, "      Record Type -> %d\n", *ptr++);
+	const int aux_data_len = *ptr++;
+	fprintf(pf, "      Aux Data Len -> %d\n", aux_data_len);
+	const int num_srcs = *ptr * 256 + *(ptr + 1);
+	fprintf(pf, "      Number of Sources -> %d\n", num_srcs);
+	ptr += 2;
+	
+	const auto [pcstr_multicast_addr, _0] = g_IF_Infos.Get_Name_by_v6_addr(ptr);
+	fprintf(pf, "      Multicast addr -> %s\n", pcstr_multicast_addr);
+	
+	return ptr + (16 + num_srcs * 16 + aux_data_len);
+}
+
+// -------------------------------------------------------------------------
+void KIcmp_v6::Dump_v2_Multicast_Listener_Report(FILE* pf) const
+{
+	const uint8_t* const pTmnt = mc_pCur + mc_bytes_rem_cur;
+	
+	mc_pHdr_v6->Wrt_IF_signature();
+	// RFC 3810
+	fprintf(pf, "++ ICMPv6 : v2 Multicast Listener Report\n");
+	const uint16_t num_records = Cx_ntohs(*(uint16_t*)(mc_pCur + 6));
+	fprintf(pf, "   Nr of Mcast Address Records -> %d\n", num_records);
+	
+	const uint8_t* ptr = mc_pCur + 8;
+	ptr = S_Dump_Mcast_Address_Record(ptr);
+	
+	if (ptr == pTmnt) { return; }
+	
+	// -------------------------------------
+	fprintf(pf, "!!! UNREAD bytes -> %d\n", int(pTmnt - ptr));
 }
 
 

@@ -60,6 +60,8 @@ int main(int argc, const char* argv[])
 			, ETH_P_IPV6, true, fd_epoll
 		};
 		if_Wan.Set_NickName(MGT_B("if_Wan"));
+		
+		g_pIf_Wan = &if_Wan;
 		g_IF_Infos.push_back(&if_Wan);
 		
 		// ---------------------------------
@@ -76,6 +78,8 @@ int main(int argc, const char* argv[])
 #endif
 
 		if_Lan.Set_NickName(GRN_B("if_Lan"));
+		
+		g_pIf_Lan = &if_Lan;
 		g_IF_Infos.push_back(&if_Lan);
 
 		// ---------------------------------

@@ -57,11 +57,16 @@ struct KHdr_v6
 	const int mc_bytes_packet_entire;
 	
 	// ----------------------------
-	void Dump(FILE* pf = stdout) const;
+	// 注意： 戻り値は、リトルエンディアンとなる（上位１６bit は 0）
+	uint64_t Get_DST_mac_addr() const { return *(uint64_t*)mc_pEth_hdr & 0xffff'ffff'ffff; }
+	uint64_t Get_SRC_mac_addr() const
+		{ return *(uint64_t*)((uint8_t*)mc_pEth_hdr + 6) & 0xffff'ffff'ffff; }
+	
 	const uint8_t* Get_SRC_v6_addr() const { return ((uint8_t*)m_pV6_hdr) + 8; }
 	const uint8_t* Get_DST_v6_addr() const { return ((uint8_t*)m_pV6_hdr) + 24; }
 	
-	void Show_IF_signature();
+	void Wrt_IF_signature(FILE* pf = stdout);
+	void Dump(FILE* pf = stdout) const;
 
 private:
 	// 今後の VLAN 対応も考慮して、mc_pV6_hdr の値を独立して持たせている
@@ -71,11 +76,15 @@ private:
 	// デバッグ用
 	const KIf_EPOLLIN* const mc_pIF;
 	// IF signature は一度しか表示しないようにしている
-	bool mb_showed_IF_signature = false;
+	bool mb_wrtn_IF_signature = false;
 };
 
 
 // --------------------------------------------------------------------
+// Hop by Hop
+// https://www.wdic.org/w/WDIC/IPv6%20Hop-by-Hop%20Option
+// https://tex2e.github.io/rfc-translater/html/rfc9268.html
+// https://datatracker.ietf.org/doc/html/rfc9268
 struct KHop_v6 : public KHdr_Cur
 {
 	KHop_v6(const KHdr_Next& hdr_next);
@@ -84,30 +93,25 @@ struct KHop_v6 : public KHdr_Cur
 	
 	uint8_t Get_NextHeader() const { return *mc_pCur; }
 	// 最初の ８bytes を含まない、８bytes 単位で表されたこのヘッダのサイズ。
-	int Get_Hdr_Ext_Length() const { return *(mc_pCur + 1); }
+//	int Get_Hdr_Ext_Length() const { return *(mc_pCur + 1); }
 	
 	const int mc_bytes_this_blk;
 
 	// ----------------------------
 	void Dump(FILE* pf = stdout) const;
 	// RFC2460
-	static void Dump_TLV(const uint8_t* p_option, FILE* pf = stdout);
+	static void Dump_TLV(const uint8_t option_type, FILE* pf = stdout);
 };
 
 
 // --------------------------------------------------------------------
-void Proc_Icmp_v6();
-
+// デバッグ用
 struct KIcmp_v6 : public KHdr_Cur
 {
 	KIcmp_v6(const KHdr_Next& blk_next);
-	KHdr_Next Get_Blk_Next() const { return { -1, 0, 0, 0 }; }
-
-	// ----------------------------
-	void Dump(FILE* pf = stdout) const;
 	
-private:
-	int m_bytes_this_blk = 0;
+	void Dump(FILE* pf = stdout) const;
+	void Dump_v2_Multicast_Listener_Report(FILE* pf = stdout) const;
 };
 
 
