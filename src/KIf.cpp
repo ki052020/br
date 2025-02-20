@@ -52,7 +52,7 @@ int KIf_EPOLLIN::On_EPOLLIN(const uint32_t events)
 		THROW(str);
 	}
 		
-	const int bytes_read = (int)read(m_fd, (void*)m_pReadBuf, EN_BYTES_read_buf);
+	const int bytes_read = this->Read(m_pReadBuf, EN_BYTES_read_buf);
 	if (bytes_read <= 0)
 		{ THROW("bytes_read <= 0"); }
 		
@@ -81,6 +81,10 @@ int KIf_WAN::Do_On_EPOLLIN(const int bytes_read)
 	this->Chk_DST_mac_addr(&hdr_v6);
 #endif
 
+
+	g_pIf_Lan->Fwd(hdr_v6);
+
+
 	printf(MGT_B("--- KIf_WAN\n"));
 	return G_AnalyzePacket(m_pReadBuf, bytes_read);
 }
@@ -99,7 +103,7 @@ void KIf_WAN::Wrt_Signature(FILE* const pf) const
 int KIf_LAN::Do_On_EPOLLIN(const int bytes_read)
 {
 	KHdr_v6 hdr_v6{ m_pReadBuf, bytes_read, this };
-#if true
+#if fajlse
 	this->Chk_DST_mac_addr(&hdr_v6);
 #endif
 
@@ -151,19 +155,26 @@ void KIf_LAN::Proc_Icmp_v6(const KHdr_Next& hdr_next)
 	
 	// ---------------------------------------	
 	const uint8_t* ptr = hdr_next.m_pNext;
-	int bytes = hdr_next.m_bytes_rem_next;
+//	int bytes = hdr_next.m_bytes_rem_next;
 	
 	switch (const int type = *ptr; type)
 	{
 	case 143: {  // Version 2 Multicast Listener Report RFC3810
-		KIcmp_v6 imcp_v6{ hdr_next };
+#if false
+		KIcmp_v6 icmp_v6{ hdr_next };
+#endif
+		printf("++ ICMPv6 -> v2 Multicast Listener Report -> ブリッジ\n\n");
+		g_pIf_Wan->Fwd(*hdr_next.m_pHdr_v6);
 		}
 		return;
 
 	default:
 		hdr_next.m_pHdr_v6->Wrt_IF_signature();
-		printf("++ ICMPv6 : 不明な type -> %d\n", type);
-		printf("   ICMPv6 bytes -> %d\n\n", bytes);
+		printf("++ ICMPv6 不明な type %d -> ブリッジ\n\n", type);
+		g_pIf_Wan->Fwd(*hdr_next.m_pHdr_v6);
+
+//		printf("++ ICMPv6 : 不明な type -> %d\n", type);
+//		printf("   ICMPv6 bytes -> %d\n\n", bytes);
 		break;
 	}
 }

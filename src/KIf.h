@@ -15,6 +15,8 @@ public:
 	
 	// 戻り値 -> 将来何かに利用することを想定しているだけ
 	int On_EPOLLIN(uint32_t events);
+	void Fwd(const KHdr_v6& hdr_v6)
+		{ this->Wrt(hdr_v6.mc_pEth_hdr, hdr_v6.mc_bytes_packet_entire); }
 	
 	// デバッグ用
 	virtual void Wrt_Signature(FILE* pf = stdout) const = 0;
